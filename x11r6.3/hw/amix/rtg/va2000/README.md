@@ -115,6 +115,12 @@ example the patched tree's. `tests/va2000/rtg.h` is a copy of the
 patched tree's `rtg.h` (version 1). Probe and initHW open the node
 `rtgCardDevice` gives (`/dev/va2000`, or the one the server's `-dev` names),
 and the harness checks both cases and that the open error names that node.
+A node that opens is taken as a VA2000 only if it answers `VA2IOC_GETFW`
+(every version of the VA2000 kernel driver does, no other driver does), and
+the harness checks that probe and initHW refuse, before mapping or writing
+anything, nodes that answer `ENOTTY` or `EINVAL` to everything or only the
+ZZ9000 driver's calls, and still take the first driver, which had no
+`GetFBufSize`.
 The harness carries the layer's caps check (the one it runs when it takes
 the card and after initHW), checks
 that the card's initHW never writes `rtgBlitMin` and that the card never

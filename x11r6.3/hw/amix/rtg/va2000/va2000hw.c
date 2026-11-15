@@ -128,17 +128,39 @@ va2000PlanMaps(VA2000ModePtr mode, long fbSize, VA2000MapPlan *plan)
 /* The device                                                              */
 /* ======================================================================= */
 
-/* Is the card there?  Open and close; nothing is mapped or written. */
+/*
+** Is the node a VA2000?  open() alone does not say: -dev can name any node
+** that opens (/dev/null, a tty, another card's driver).  Only the VA2000
+** kernel driver answers VA2IOC_GETFW, ('V' << 8) | 1: every version of it
+** does, from the first one (which had no SVGAIOCGetFBufSize and no
+** SVGAIOCGetBoardData) on, and it is a pure read of the firmware register
+** answered through the return value.  No other Amix driver uses the 'V'
+** range: the ZZ9000/Z3660 driver's own calls are ('Z' << 8) | n and it
+** answers EINVAL here, ttys and disks EINVAL or ENOTTY, /dev/null an error.
+** The SVGAIOC calls do not identify the card, since other drivers answer
+** some of them (the ZZ9000 driver the monitor switch).  The argument is 0:
+** a foreign driver that took the number for a pointer could copy nothing
+** in or out.  Returns the firmware number, or -1 with errno set.
+*/
+static int
+va2000Identify(int fd)
+{
+    return ioctl(fd, VA2IOC_GETFW, 0);
+}
+
+/* Is the card there?  Open, ask, close; nothing is mapped or written. */
 static Bool
 va2000Probe(void)
 {
-    int fd;
+    int  fd;
+    Bool ok;
 
     fd = open(rtgCardDevice(&va2000CardOps), O_RDWR);
     if (fd < 0)
         return FALSE;
+    ok = va2000Identify(fd) != -1;
     (void) close(fd);
-    return TRUE;
+    return ok;
 }
 
 /*
@@ -177,9 +199,9 @@ va2000WriteMode(volatile unsigned char *regs, VA2000ModePtr m)
 }
 
 /*
-** initHW: open the device, ask what board it is, map the register page and
-** the mode's framebuffer, write the mode, clear the screen, test the
-** blitter.  FALSE = no screen, everything undone.
+** initHW: open the device, check that it is a VA2000, ask what board it
+** is, map the register page and the mode's framebuffer, write the mode,
+** clear the screen, test the blitter.  FALSE = no screen, everything undone.
 */
 static Bool
 va2000InitHW(rtgScreenPtr pRTG)
@@ -204,8 +226,17 @@ va2000InitHW(rtgScreenPtr pRTG)
         return FALSE;
     }
 
+    /* a VA2000, before anything is mapped or written */
+    fw = va2000Identify(fd);
+    if (fw == -1) {
+        ErrorF("va2000: %s is not a VA2000 (%s)\n",
+               rtgCardDevice(&va2000CardOps), strerror(errno));
+        (void) close(fd);
+        xfree(pVA);
+        return FALSE;
+    }
+
     /* the board, before anything is touched: the line to ask a tester for */
-    fw = ioctl(fd, VA2IOC_GETFW, 0);
     v = ioctl(fd, SVGAIOCGetFBufSize, 0);
     (void) va2000PlanMaps(va2000Mode, v > 0 ? (long) v : 0L, &plan);
     ErrorF("va2000: firmware %d, framebuffer %ld KB, %s; mode %s\n",

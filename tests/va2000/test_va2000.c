@@ -6,7 +6,9 @@
  *
  * The model: /dev/va2000's open, close, ioctl (GETFW, GetFBufSize,
  * SetMonitorSwitch) and mmap over a Zorro II (4 MB), Zorro III (32 MB) or
- * unknown aperture; the register page; a blitter that takes inclusive
+ * unknown aperture, as the current driver or the first one (GETFW and the
+ * other 'V' reads only); nodes that open and map but are not a VA2000 (every
+ * ioctl ENOTTY, every ioctl EINVAL, or the ZZ9000 driver's calls only); the register page; a blitter that takes inclusive
  * coordinates and starting-row base addresses, runs forward or reverse by
  * the order of its coordinates, moves one pixel at a time in that order (so
  * a wrong direction on an overlapping copy shows), stays busy for a set
@@ -57,6 +59,21 @@ static int  verbose;
 
 enum { BLIT_OK, BLIT_STUCK, BLIT_NOWRITE, BLIT_READSFW, BLIT_STUCKAFTER };
 
+/* what answers on the node */
+enum {
+    DRV_VA2000,         /* the current VA2000 driver                     */
+    DRV_VA2000_FIRST,   /* the first one (c90fc9d): the 'V' reads only   */
+    DRV_ENOTTY,         /* opens and maps, every ioctl ENOTTY            */
+    DRV_EINVAL,         /* opens and maps, every ioctl EINVAL            */
+    DRV_ZZ9000          /* the ZZ9000 driver: ('Z' << 8) | n and the      */
+                        /* monitor switch; anything else EINVAL          */
+};
+#define SIM_VA2IOC_GETSCREENW   (VA2000_VA2IOC | 2)
+#define SIM_VA2IOC_GETSCREENH   (VA2000_VA2IOC | 3)
+#define SIM_VA2IOC_GETCOLORMODE (VA2000_VA2IOC | 4)
+#define SIM_SVGAIOCGetMonitorSwitch (VA2000_SVGAIOC | 0x06)
+#define SIM_ZZ9K_IOC            ('Z' << 8)
+
 static struct {
     int  present;       /* the device opens                              */
     long aperture;      /* bytes the board decodes                       */
@@ -67,6 +84,7 @@ static struct {
     long stuckAfter;    /* BLIT_STUCKAFTER: operations that still work   */
     int  mmapFailAt;    /* fail the n-th mmap (1-based), 0 = never       */
     const char *node;   /* the device node the card answers on           */
+    int  driver;        /* DRV_*                                         */
 } cfg;
 
 static unsigned char *simMem;           /* the aperture                  */
@@ -78,6 +96,8 @@ static long simOpens, simCloses, simMmaps;
 static int  simSwitchVal, simSwitchSize, simSwitchFd, simSwitchCalls;
 static struct { void *p; size_t len; long off; int live; } simMaps[8];
 static int  simNMaps;
+static long simIoctls, simForeignOther;    /* ioctls; any but GETFW sent   */
+                                           /* to a node that is no VA2000  */
 static char simLastPath[256];          /* the node the last open named  */
 static char errLog[8192];
 static int  errCount;
@@ -109,6 +129,8 @@ simReset(long aperture)
     cfg.blit = BLIT_OK;
     cfg.latency = 3;
     cfg.node = VA2000_DEV;
+    cfg.driver = DRV_VA2000;
+    simIoctls = simForeignOther = 0;
     simLastPath[0] = 0;
     memset(simMem, 0xa5, AP_Z3);        /* junk: the clear must happen */
     memset(simReg, 0, sizeof(simReg));
@@ -275,8 +297,24 @@ int
 simIoctl(int fd, int req, long arg, int argsize)
 {
     if (!simFdOk(fd)) { errno = EBADF; return -1; }
+    simIoctls++;
+    if (cfg.driver >= DRV_ENOTTY && req != VA2IOC_GETFW)
+        simForeignOther++;
+    if (cfg.driver == DRV_ENOTTY) { errno = ENOTTY; return -1; }
+    if (cfg.driver == DRV_EINVAL) { errno = EINVAL; return -1; }
+    if (cfg.driver == DRV_ZZ9000) {
+        if ((req & 0xff00) == SIM_ZZ9K_IOC || req == SIM_SVGAIOCGetMonitorSwitch ||
+            req == SVGAIOCSetMonitorSwitch)
+            return 0;
+        errno = EINVAL;
+        return -1;
+    }
     if (req == VA2IOC_GETFW)
         return cfg.fw;
+    if (req == SIM_VA2IOC_GETSCREENW || req == SIM_VA2IOC_GETSCREENH ||
+        req == SIM_VA2IOC_GETCOLORMODE)
+        return 0;
+    if (cfg.driver == DRV_VA2000_FIRST) { errno = EINVAL; return -1; }
     if (req == SVGAIOCGetFBufSize) {
         if (!cfg.fbsizeIoctl) { errno = EINVAL; return -1; }
         return (int) (cfg.aperture - VA2000_FB_OFFSET);
@@ -1135,12 +1173,97 @@ testDevice(void)
     rtgDevice = NULL;
 }
 
+/*
+** Identity: a node that opens is not yet a VA2000 (-dev can name any node).
+** Probe and initHW refuse a node whose driver does not answer GETFW, before
+** mapping or writing anything, send it nothing but GETFW, and initHW names
+** the node; the card on the default node, on a -dev node, and behind the
+** first driver is still taken.
+*/
+static void
+foreignNode(char *node, int driver, char *what)
+{
+    char want[128];
+
+    rtgDevice = node;
+    cardUp(AP_Z3, NULL);
+    cfg.node = node;
+    cfg.driver = driver;
+    CHECK(!(*va2000CardOps.probe)(), "%s: probe refuses it", what);
+    CHECK(simOpens == 1 && simCloses == 1 && simOpenFds == 0,
+          "%s: probe opens and closes once", what);
+    CHECK(simMmaps == 0 && simRegWrites == 0, "%s: probe maps and writes nothing", what);
+    CHECK(simIoctls >= 1 && simForeignOther == 0,
+          "%s: probe sends only GETFW (%ld others)", what, simForeignOther);
+    simIoctls = 0;
+    CHECK(!initScreen("800x600"), "%s: initHW refuses it", what);
+    CHECK(simMmaps == 0 && simLiveMaps() == 0, "%s: initHW maps nothing (%ld mmap calls)",
+          what, simMmaps);
+    CHECK(simRegWrites == 0, "%s: initHW writes no register (%ld)", what, simRegWrites);
+    CHECK(simOpenFds == 0, "%s: initHW leaves no descriptor", what);
+    CHECK(simIoctls >= 1 && simForeignOther == 0,
+          "%s: initHW sends only GETFW (%ld others)", what, simForeignOther);
+    snprintf(want, sizeof(want), "va2000: %s is not a VA2000 (", node);
+    CHECK(strstr(errLog, want) != NULL, "%s: the error says '%s...'", what, want);
+    CHECK(strstr(errLog, "cannot open") == NULL, "%s: not called an open failure", what);
+    CHECK(strstr(errLog, "firmware") == NULL, "%s: no board line for it", what);
+    CHECK(memcmp(FBW, "\xa5\xa5\xa5\xa5", 4) == 0, "%s: its memory untouched", what);
+    CHECK(simViol == 0, "%s: no model violations", what);
+    rtgDevice = NULL;
+}
+
+static void
+testIdentity(void)
+{
+    static char devnull[] = "/dev/null", zz[] = "/dev/zz9000", tty[] = "/dev/tty",
+                disk[] = "/dev/dsk/c0d0s0", other[] = "/dev/va2001";
+
+    foreignNode(devnull, DRV_ENOTTY, "/dev/null (ENOTTY)");
+    foreignNode(tty, DRV_EINVAL, "a tty (EINVAL)");
+    foreignNode(disk, DRV_ENOTTY, "a disk (ENOTTY)");
+    foreignNode(zz, DRV_ZZ9000, "the ZZ9000 driver");
+
+    /* the default node's open error stays an open error */
+    rtgDevice = NULL;
+    cardUp(AP_Z3, NULL);
+    cfg.present = 0;
+    CHECK(!(*va2000CardOps.probe)() && !initScreen("800x600"), "no device: refused");
+    CHECK(strstr(errLog, "cannot open " VA2000_DEV " (") != NULL &&
+          strstr(errLog, "is not a VA2000") == NULL, "no device: an open error, not identity");
+
+    /* the card: default node, -dev node */
+    cardUp(AP_Z3, NULL);
+    CHECK((*va2000CardOps.probe)(), "default node, current driver: probe takes it");
+    CHECK(initScreen("800x600") && simLiveMaps() == 2, "default node: initHW maps it");
+    CHECK(strstr(errLog, "is not a VA2000") == NULL, "default node: no identity error");
+    (*va2000CardOps.closeHW)(&scr);
+    rtgDevice = other;
+    cardUp(AP_Z3, NULL);
+    cfg.node = other;
+    CHECK((*va2000CardOps.probe)(), "-dev node, current driver: probe takes it");
+    CHECK(initScreen("800x600") && simLiveMaps() == 2, "-dev node: initHW maps it");
+    (*va2000CardOps.closeHW)(&scr);
+    rtgDevice = NULL;
+
+    /* the first driver: GETFW, no GetFBufSize -- the R5 driver's 2 MB */
+    cardUp(AP_Z2, NULL);
+    cfg.driver = DRV_VA2000_FIRST;
+    CHECK((*va2000CardOps.probe)(), "first driver: probe takes it");
+    CHECK(initScreen("800x600") && simLiveMaps() == 2 && simViol == 0,
+          "first driver: initHW maps it");
+    CHECK(strstr(errLog, "firmware 98, framebuffer 1984 KB, bus unknown") != NULL,
+          "first driver: firmware read, 2 MB assumed");
+    (*va2000CardOps.closeHW)(&scr);
+    CHECK(simOpenFds == 0 && simLiveMaps() == 0, "first driver: closed");
+}
+
 /* ===================================================================== */
 
 static const struct { char *name; void (*fn)(void); } groups[] = {
     { "record", testRecord },
     { "probe", testProbe },
     { "-dev: the device node", testDevice },
+    { "identity: nodes that open but are not a VA2000", testIdentity },
     { "plan (modes x Zorro II/III/unknown)", testPlan },
     { "initHW/closeHW (modes x Zorro II/III, failures, reset)", testInit },
     { "fills", testFill },
