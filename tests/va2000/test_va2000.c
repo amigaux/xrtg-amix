@@ -66,6 +66,7 @@ static struct {
     int  latency;       /* status reads a blit stays busy                */
     long stuckAfter;    /* BLIT_STUCKAFTER: operations that still work   */
     int  mmapFailAt;    /* fail the n-th mmap (1-based), 0 = never       */
+    const char *node;   /* the device node the card answers on           */
 } cfg;
 
 static unsigned char *simMem;           /* the aperture                  */
@@ -77,6 +78,7 @@ static long simOpens, simCloses, simMmaps;
 static int  simSwitchVal, simSwitchSize, simSwitchFd, simSwitchCalls;
 static struct { void *p; size_t len; long off; int live; } simMaps[8];
 static int  simNMaps;
+static char simLastPath[256];          /* the node the last open named  */
 static char errLog[8192];
 static int  errCount;
 
@@ -106,6 +108,8 @@ simReset(long aperture)
     cfg.fw = 98;
     cfg.blit = BLIT_OK;
     cfg.latency = 3;
+    cfg.node = VA2000_DEV;
+    simLastPath[0] = 0;
     memset(simMem, 0xa5, AP_Z3);        /* junk: the clear must happen */
     memset(simReg, 0, sizeof(simReg));
     simBusy = simBusyLeft = simOp = 0;
@@ -248,7 +252,8 @@ int
 simOpen(const char *path, int flags, ...)
 {
     (void) flags;
-    if (strcmp(path, VA2000_DEV) != 0 || !cfg.present) {
+    snprintf(simLastPath, sizeof(simLastPath), "%s", path);
+    if (strcmp(path, cfg.node) != 0 || !cfg.present) {
         errno = ENXIO;
         return -1;
     }
@@ -327,8 +332,16 @@ simMunmap(void *addr, size_t len)
 
 int         rtgBlitMin = 1024;
 int         rtgMove16 = 0;
+char       *rtgDevice = NULL;
 rtgCardOps *rtgCard = &va2000CardOps;
 static long cpuFills, cpuCopies;
+
+/* rtgInit.c: -dev's node if given, else the card's own */
+char *
+rtgCardDevice(rtgCardOps *c)
+{
+    return rtgDevice ? rtgDevice : c->device;
+}
 
 void
 ErrorF(const char *fmt, ...)
@@ -1072,11 +1085,62 @@ testMove16AndBounds(void)
     (*va2000CardOps.closeHW)(&scr);
 }
 
+/* -dev: probe and initHW open rtgCardDevice(&va2000CardOps), never a fixed
+ * path, and the error names the node in use */
+static void
+testDevice(void)
+{
+    static char other[] = "/dev/va2001";
+
+    rtgDevice = NULL;
+    cardUp(AP_Z3, NULL);
+    CHECK((*va2000CardOps.probe)(), "no -dev: probe finds the card");
+    CHECK(strcmp(simLastPath, VA2000_DEV) == 0, "no -dev: probe opens %s", simLastPath);
+    simLastPath[0] = 0;
+    CHECK(initScreen("800x600"), "no -dev: initHW");
+    CHECK(strcmp(simLastPath, VA2000_DEV) == 0, "no -dev: initHW opens %s", simLastPath);
+    (*va2000CardOps.closeHW)(&scr);
+    CHECK(simOpenFds == 0, "no -dev: closed");
+
+    cardUp(AP_Z3, NULL);
+    cfg.present = 0;
+    CHECK(!initScreen("800x600"), "no -dev, no device: no screen");
+    CHECK(strstr(errLog, "cannot open " VA2000_DEV " (") != NULL,
+          "no -dev: the error names %s", VA2000_DEV);
+
+    rtgDevice = other;
+    cardUp(AP_Z3, NULL);
+    cfg.node = other;
+    CHECK(rtgCardDevice(&va2000CardOps) == other, "rtgCardDevice gives -dev's node");
+    CHECK((*va2000CardOps.probe)(), "-dev: probe finds the card there");
+    CHECK(strcmp(simLastPath, other) == 0, "-dev: probe opens %s", simLastPath);
+    simLastPath[0] = 0;
+    CHECK(initScreen("800x600"), "-dev: initHW");
+    CHECK(strcmp(simLastPath, other) == 0, "-dev: initHW opens %s", simLastPath);
+    CHECK(simViol == 0, "-dev: no model violations");
+    (*va2000CardOps.closeHW)(&scr);
+    CHECK(simOpenFds == 0 && simLiveMaps() == 0, "-dev: closed");
+
+    cardUp(AP_Z3, NULL);                /* the card on its own node only */
+    CHECK(!(*va2000CardOps.probe)(), "-dev elsewhere: probe finds nothing");
+    CHECK(strcmp(simLastPath, other) == 0, "-dev elsewhere: probe opens %s", simLastPath);
+    CHECK(!initScreen("800x600") && simOpenFds == 0 && simLiveMaps() == 0,
+          "-dev elsewhere: no screen, nothing left");
+    CHECK(strstr(errLog, "cannot open /dev/va2001 (") != NULL,
+          "-dev: the error names the node in use");
+    CHECK(strstr(errLog, VA2000_DEV " ") == NULL, "-dev: the error does not name %s",
+          VA2000_DEV);
+    CHECK(strcmp(va2000CardOps.device, VA2000_DEV) == 0, "the record keeps %s",
+          VA2000_DEV);
+    rtgDevice = NULL;
+}
+
 /* ===================================================================== */
 
 static const struct { char *name; void (*fn)(void); } groups[] = {
     { "record", testRecord },
     { "probe", testProbe },
+    { "-dev: the device node", testDevice },
     { "plan (modes x Zorro II/III/unknown)", testPlan },
     { "initHW/closeHW (modes x Zorro II/III, failures, reset)", testInit },
     { "fills", testFill },

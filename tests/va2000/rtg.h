@@ -71,7 +71,9 @@ typedef struct _rtgScreenRec *rtgScreenPtr;
 ** own beyond fillBox and copyBox.
 **
 **   probe()          is the card there?  No side effects that last: open,
-**                    ask, close.
+**                    ask, close.  probe and initHW open rtgCardDevice(the
+**                    card's own record), never a fixed path, so the node
+**                    -dev names reaches them.
 **   setMode(name)    -mode WxH: select that mode for the next initHW;
 **                    FALSE = not a mode of this card (modes lists them).
 **   modeSize(&w,&h)  the selected mode's size (the mode default until a
@@ -164,6 +166,9 @@ extern rtgCardOps *rtgCard;         /* the card this server drives           */
 */
 extern int  rtgBlitMin;             /* -blitmin; a card sets 0 to stop       */
 extern int  rtgMove16;              /* -move16 (68040/68060 line bursts)     */
+extern char *rtgDevice;             /* -dev PATH; NULL: each card its own    */
+extern char *rtgCardDevice(rtgCardOps *c); /* the node card c opens: -dev's, */
+                                    /* else c->device                        */
 extern void rtgCpuFill(rtgScreenPtr pRTG, int x1, int y1, int x2, int y2,
                        unsigned long pixel);        /* [x1,x2) x [y1,y2)     */
 extern void rtgCpuCopy(rtgScreenPtr pRTG, int sx, int sy, int w, int h,

@@ -112,8 +112,11 @@ status reads, and can be made to stick, to do nothing, or to read the
 firmware byte from every register. Results are compared with a plain CPU
 fill and copy. `RTG_H=<path>` runs the tests against another `rtg.h`, for
 example the patched tree's. `tests/va2000/rtg.h` is a copy of the
-patched tree's `rtg.h` (version 1). The harness carries the layer's caps
-check (the one it runs when it takes the card and after initHW), checks
+patched tree's `rtg.h` (version 1). Probe and initHW open the node
+`rtgCardDevice` gives (`/dev/va2000`, or the one the server's `-dev` names),
+and the harness checks both cases and that the open error names that node.
+The harness carries the layer's caps check (the one it runs when it takes
+the card and after initHW), checks
 that the card's initHW never writes `rtgBlitMin` and that the card never
 writes `rtgMove16`, and checks the caps flags after a passing self-test, a
 failing one and a blitter lost later. The card files are built with

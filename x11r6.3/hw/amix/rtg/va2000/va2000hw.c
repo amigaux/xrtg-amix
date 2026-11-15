@@ -134,7 +134,7 @@ va2000Probe(void)
 {
     int fd;
 
-    fd = open(VA2000_DEV, O_RDWR);
+    fd = open(rtgCardDevice(&va2000CardOps), O_RDWR);
     if (fd < 0)
         return FALSE;
     (void) close(fd);
@@ -196,9 +196,10 @@ va2000InitHW(rtgScreenPtr pRTG)
     }
     memset((char *) pVA, 0, sizeof(*pVA));
 
-    fd = open(VA2000_DEV, O_RDWR);
+    fd = open(rtgCardDevice(&va2000CardOps), O_RDWR);
     if (fd < 0) {
-        ErrorF("va2000: cannot open %s (%s)\n", VA2000_DEV, strerror(errno));
+        ErrorF("va2000: cannot open %s (%s)\n", rtgCardDevice(&va2000CardOps),
+               strerror(errno));
         xfree(pVA);
         return FALSE;
     }
