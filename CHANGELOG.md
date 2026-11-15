@@ -2,6 +2,10 @@
 
 Changes in the amigaux fork, newest first. The upstream history is in git.
 
+## 2026-11-15 — the VA2000 driver takes a node only if it is a VA2000
+
+The probe and `initHW` take a device node only if it answers `VA2IOC_GETFW`, which every version of the VA2000 kernel driver does and no other device. Until now any node that opened passed, so with the server's `-dev` option a wrong node could be taken for a VA2000, and `-card va2000 -dev` on another card's node wrote into that card's framebuffer. `initHW` now refuses such a node before it maps or writes anything: "va2000: <node> is not a VA2000", separate from "cannot open <node>". The harness gains foreign nodes and the first VA2000 driver.
+
 ## 2026-11-15 — the VA2000 driver opens the node the server names
 
 The VA2000 card driver for X11R6.3 uses the device node the server's `-dev` option names: its probe and `initHW` open `rtgCardDevice(&va2000CardOps)`, and the "cannot open" error names that node. Without `-dev` the card opens /dev/va2000 as before. The vendored `rtg.h` in `tests/va2000` is the shared layer's with `-dev`; the harness has a new group for the device node.
