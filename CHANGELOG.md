@@ -2,6 +2,10 @@
 
 Changes in the amigaux fork, newest first. The upstream history is in git.
 
+## 2026-11-15 — the VA2000 driver opens the node the server names
+
+The VA2000 card driver for X11R6.3 uses the device node the server's `-dev` option names: its probe and `initHW` open `rtgCardDevice(&va2000CardOps)`, and the "cannot open" error names that node. Without `-dev` the card opens /dev/va2000 as before. The vendored `rtg.h` in `tests/va2000` is the shared layer's with `-dev`; the harness has a new group for the device node.
+
 ## 2026-11-15 — the VA2000 driver follows the shared layer's final card interface
 
 On a failed start-up self-test the driver clears its blitter capability and leaves the blit threshold to the shared layer, which reads the capabilities again after `initHW`. The capabilities carry `RTG_CAP_NOMOVE16`; the driver no longer writes the layer's move16 switch. The vendored `rtg.h` in `tests/va2000` is the shared layer's, and the harness checks the new rules.
