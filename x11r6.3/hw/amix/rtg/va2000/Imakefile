@@ -1,0 +1,19 @@
+XCOMM The MNT VA2000 card for the X11R6.3 RTG layer (hw/amix/rtg/rtg.h).
+XCOMM Copied into programs/Xserver/hw/amix/rtg/va2000 by the x11r6.3 package
+XCOMM build; rtg/Imakefile lists it in SUBDIRS and adds -DRTG_VA2000 to
+XCOMM RTGCARDS, and the server links LibraryTargetName(va2000) (README.md).
+XCOMM -DVA2000_STATS builds the blitter counters and the slow-wait log.
+
+#include <Server.tmpl>
+
+SRCS = va2000hw.c va2000blit.c
+
+OBJS = va2000hw.o va2000blit.o
+
+STD_DEFINES = ServerDefines -DRTG -DRTG_VA2000
+   INCLUDES = -I. -I.. -I../.. -I../../../../include -I$(XINCLUDESRC) -I$(FONTINCSRC)
+
+NormalLibraryObjectRule()
+NormalLibraryTarget(va2000, $(OBJS))
+
+DependTarget()
