@@ -393,6 +393,28 @@ rtgMonitorSwitchInt(int fd, int which)
     (void) fd; (void) which;
 }
 
+/*
+** rtgInit.c's rtgCardCheck, as the patched tree has it: what the card's
+** caps say it cannot do, read when the layer takes the card and again after
+** its initHW.  The layer, not the card, zeroes rtgBlitMin and rtgMove16.
+*/
+static void
+layerCardCheck(void)
+{
+    rtgCardOps *c = rtgCard;
+
+    if (rtgBlitMin > 0 && (!(c->caps.flags & RTG_CAP_BLITTER) ||
+                           !c->fillBox || !c->copyBox || !c->flush)) {
+        ErrorF("rtg: %s: no blitter; fills and copies on the CPU\n", c->name);
+        rtgBlitMin = 0;
+    }
+    if (rtgMove16 && (c->caps.flags & RTG_CAP_NOMOVE16)) {
+        ErrorF("rtg: %s: no move16 into its framebuffer; -move16 ignored\n",
+               c->name);
+        rtgMove16 = 0;
+    }
+}
+
 /* ===================================================================== */
 /* The reference and the layer's calling pattern                          */
 /* ===================================================================== */
@@ -493,15 +515,30 @@ cardUp(long aperture, char *mode)
     simReset(aperture);
 }
 
+/* the layer's screen start: initHW, which must leave rtgBlitMin and
+ * rtgMove16 alone, then the layer's caps check */
 static Bool
 initScreen(char *mode)
 {
+    int  blitMin = rtgBlitMin, move16 = rtgMove16;
+    Bool ok;
+
     memset(&scr, 0, sizeof(scr));
     scr.devFd = -1;
     if (mode && !(*va2000CardOps.setMode)(mode))
         return FALSE;
-    return (*va2000CardOps.initHW)(&scr);
+    ok = (*va2000CardOps.initHW)(&scr);
+    CHECK(rtgBlitMin == blitMin, "initHW leaves rtgBlitMin alone (%d, was %d)",
+          rtgBlitMin, blitMin);
+    CHECK(rtgMove16 == move16, "initHW leaves rtgMove16 alone (%d, was %d)",
+          rtgMove16, move16);
+    if (ok)
+        layerCardCheck();
+    return ok;
 }
+
+#define CAPS_ALL  (RTG_CAP_BLITTER | RTG_CAP_USERREGS | RTG_CAP_NOMOVE16)
+#define CAPS_LOST (RTG_CAP_USERREGS | RTG_CAP_NOMOVE16)
 
 static long
 apertureOf(int bus)
@@ -535,8 +572,9 @@ testRecord(void)
           c->caps.blueMask == 0x001f, "RGB565 masks");
     CHECK(c->caps.bitsPerRGB == 6, "bitsPerRGB");
     CHECK(c->caps.blitMin > 0, "blitMin default");
-    CHECK((c->caps.flags & (RTG_CAP_BLITTER | RTG_CAP_USERREGS)) ==
-          (RTG_CAP_BLITTER | RTG_CAP_USERREGS), "flags 0x%x", c->caps.flags);
+    CHECK(c->caps.flags == (RTG_CAP_BLITTER | RTG_CAP_USERREGS | RTG_CAP_NOMOVE16),
+          "flags 0x%x: blitter, user registers, no move16", c->caps.flags);
+    CHECK(RTG_CAP_NOMOVE16 == 0x0004, "RTG_CAP_NOMOVE16 is 0x0004");
     CHECK(c->probe && c->setMode && c->modeSize && c->initHW && c->closeHW &&
           c->fillBox && c->copyBox && c->flush && c->monitorSwitch, "every hook set");
     (*c->modeSize)(&w, &h);
@@ -900,7 +938,8 @@ testSelfTestOk(void)
     rtgBlitMin = 1024;
     CHECK(initScreen("800x600"), "init");
     CHECK(rtgBlitMin == 1024, "the self-test keeps -blitmin");
-    CHECK(va2000CardOps.caps.flags & RTG_CAP_BLITTER, "the blitter stays");
+    CHECK(va2000CardOps.caps.flags == CAPS_ALL, "caps unchanged (0x%x)",
+          va2000CardOps.caps.flags);
     CHECK(simOps == 1, "one self-test blit (%ld)", simOps);
     CHECK(FBW[0] == 0, "the self-test pixel is put back");
     CHECK(strstr(errLog, "without the blitter") == NULL, "nothing said");
@@ -919,9 +958,10 @@ selfTestFails(int how, char *expect)
     rtgBlitMin = 1024;
     reads = simEnableReads;
     CHECK(initScreen("800x600"), "init with a broken blitter still gives a screen");
-    CHECK(rtgBlitMin == 0, "rtgBlitMin 0 (%d)", rtgBlitMin);
-    CHECK(!(va2000CardOps.caps.flags & RTG_CAP_BLITTER) && va2000CardOps.caps.blitMin == 0,
-          "caps: no blitter");
+    CHECK(rtgBlitMin == 0, "the layer's check after initHW: rtgBlitMin 0 (%d)", rtgBlitMin);
+    CHECK(va2000CardOps.caps.flags == CAPS_LOST && va2000CardOps.caps.blitMin == 0,
+          "caps: no blitter, the rest kept (0x%x)", va2000CardOps.caps.flags);
+    CHECK(countIn(errLog, "rtg: va2000: no blitter") == 1, "the layer says it once");
     CHECK(strstr(errLog, expect) != NULL, "says: %s", expect);
     CHECK(countIn(errLog, "running without the blitter") == 1, "said once");
     if (how != BLIT_NOWRITE)
@@ -940,6 +980,7 @@ selfTestFails(int how, char *expect)
     reads = simOps;
     CHECK(initScreen(NULL), "generation 2");
     CHECK(rtgBlitMin == 0 && simOps == reads, "generation 2: no blitter, no new test");
+    CHECK(va2000CardOps.caps.flags == CAPS_LOST, "generation 2: caps still without the blitter");
     CHECK(countIn(errLog, "running without the blitter") == 1, "still said once");
     (*va2000CardOps.closeHW)(&scr);
     CHECK(simLiveMaps() == 0 && simOpenFds == 0, "closed");
@@ -970,7 +1011,9 @@ lostLater(long after, int copyLast)
     layerFill(&scr, 600, 0, 640, 40, 0x3333);
     layerCopy(&scr, 0, 0, 640, 479, 0, 1);
     CHECK(refDiff(&scr) == 0, "after the loss the screen is right");
-    CHECK(rtgBlitMin == 0, "rtgBlitMin 0");
+    CHECK(rtgBlitMin == 0, "the card sets rtgBlitMin 0 at run time");
+    CHECK(va2000CardOps.caps.flags == CAPS_LOST, "caps: no blitter (0x%x)",
+          va2000CardOps.caps.flags);
     CHECK(countIn(errLog, "running without the blitter") == 1, "said once");
     CHECK(strstr(errLog, "blitter timeout") != NULL, "says timeout");
     CHECK(cpuFills + cpuCopies >= 1, "the held operation was drawn on the CPU");
@@ -1001,9 +1044,16 @@ testMove16AndBounds(void)
 {
     cardUp(AP_Z3, NULL);
     rtgMove16 = 1;
+    layerCardCheck();                   /* the layer takes the card */
+    CHECK(rtgMove16 == 0, "the layer turns -move16 off when it takes the card");
+    CHECK(countIn(errLog, "-move16 ignored") == 1, "the layer says so");
+    rtgMove16 = 1;                      /* initHW must not touch it either */
     CHECK(initScreen("1280x720"), "init");
-    CHECK(rtgMove16 == 0, "-move16 off on this card");
-    CHECK(strstr(errLog, "move16") != NULL, "and said");
+    CHECK(rtgMove16 == 0, "and again after initHW");
+    CHECK(countIn(errLog, "-move16 ignored") == 2, "the layer said it at both checks");
+    CHECK(countIn(errLog, "move16") == 2 * countIn(errLog, "-move16 ignored"),
+          "the card itself says nothing of move16");    /* 2 in each line */
+    CHECK(va2000CardOps.caps.flags == CAPS_ALL, "caps 0x%x", va2000CardOps.caps.flags);
     rtgBlitMin = 1;
     refInit(&scr, 8);
     simOps = 0;

@@ -12,7 +12,8 @@ CC      ?= cc
 CARD    := ../../x11r6.3/hw/amix/rtg/va2000
 RTG_H   ?= rtg.h
 B       := build
-WARN    := -Wall -Wextra -Wmissing-prototypes -Wpointer-arith -Wshadow -Werror
+WARN    := -Wall -Wextra -Wmissing-prototypes -Wstrict-prototypes -Wpointer-arith \
+           -Wshadow -Werror
 CFLAGS  := -std=gnu11 -O2 -g -U_FORTIFY_SOURCE $(WARN)
 # the card files: the stubs (their ../rtg.h is $(B)/rtg.h), the model's
 # syscalls and register access

@@ -23,6 +23,9 @@
 **  the layer calls it through that record and nothing else.
 */
 
+struct _Screen;                     /* scrnintstr.h's, where it is included */
+struct _ScreenInfo;
+
 /*
 ** Per-screen private record allocated for each RTG screen.
 ** Stored in ScreenRec->devPrivates[rtgScreenIndex].
@@ -40,7 +43,8 @@ struct _rtgScreenRec {
     int                 depth;
 
     struct _ColormapRec *installedMap;  /* NULL for TrueColor (no CLUT)       */
-    int               (*CloseScreen)(); /* chained CloseScreen                */
+    Bool              (*CloseScreen)(int index, struct _Screen *pScreen);
+                                        /* chained CloseScreen                */
 
     unsigned char      *cardPrivate;    /* card-specific private data         */
     int                 devFd;          /* the card's device fd, -1 = none;   */
@@ -76,7 +80,12 @@ typedef struct _rtgScreenRec *rtgScreenPtr;
 **                    fill pRTG->fbBase, frameBase, fbOffset, width,
 **                    height, pitch, bitsPerPixel, depth, cardPrivate, and
 **                    devFd (the device the monitor switch is sent to, or
-**                    -1).  FALSE = no screen, everything undone.
+**                    -1).  FALSE = no screen, everything undone.  A card
+**                    that finds here that its blitter does not work (a
+**                    self-test) clears RTG_CAP_BLITTER in its own caps, and
+**                    the layer then draws everything on the CPU; the same
+**                    for RTG_CAP_NOMOVE16, which the layer reads after
+**                    initHW too.
 **   closeHW(pRTG)    undo initHW (called once per screen, also at a reset;
 **                    the layer has flushed).
 **   fillBox(pRTG, x1, y1, x2, y2, pixel)
@@ -114,6 +123,8 @@ typedef struct _rtgScreenRec *rtgScreenPtr;
 #define RTG_CAP_USERREGS    0x0002  /* the card's registers are mapped into  */
                                     /* the server (not reached through the   */
                                     /* kernel driver)                        */
+#define RTG_CAP_NOMOVE16    0x0004  /* no move16 into this framebuffer:      */
+                                    /* -move16 is ignored                    */
 
 typedef struct _rtgCardCaps {
     int           depth;            /* the screen's depth, 16                */
@@ -187,7 +198,7 @@ extern void rtgMonitorSwitchInt(int fd, int which); /* the ioctl, an int     */
 #define SVGAMONITORSWITCH_SVGA  2
 #endif
 
-extern void rtgAbort();
+extern void rtgAbort(void);
 
 extern int rtgScreenIndex;      /* allocated by AllocateScreenPrivateIndex() */
 
@@ -197,17 +208,20 @@ extern int rtgScreenIndex;      /* allocated by AllocateScreenPrivateIndex() */
 /*
 ** The server's options (amixIo.c).
 */
-extern Bool rtgSetCardName();       /* -card NAME: FALSE = no such card here */
-extern Bool rtgSetModeName();       /* (argv0, name) -mode WxH: FALSE = not  */
-                                    /* a mode of the card the name or -card  */
-                                    /* fixes (said); auto: checked later     */
+extern Bool rtgSetCardName(char *name);  /* -card NAME: FALSE = no such   */
+                                         /* card here (said)               */
+extern Bool rtgSetModeName(char *argv0, char *name);
+                                    /* -mode WxH: FALSE = not a mode of the  */
+                                    /* card the name or -card fixes (said);  */
+                                    /* under auto it is checked later        */
 
 /*
 ** Entry points called from amixInit.c via amixFbData[].
 */
 #ifdef RTG
-extern int rtgProbe();
-extern int rtgCreate();
+extern Bool rtgProbe(struct _ScreenInfo *pScreenInfo, int index, int fbNum,
+                     int argc, char **argv);
+extern Bool rtgCreate(struct _ScreenInfo *pScreenInfo, int argc, char **argv);
 #endif
 
 #endif /* AMIX_RTG_H */

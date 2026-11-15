@@ -7,8 +7,10 @@ its install scripts are not changed by it.
 
 **Status: nothing in this directory has run on a real VA2000.** The card
 cannot be emulated. What has been checked: it compiles for the target with
-the userland cross compiler (GCC 14, `-O2 -Wall`, no warnings) against the
-server headers of the patched X11R6.3 tree, and a host test harness
+the userland cross compiler (GCC 14, `-O2 -Wall`, no warnings; with
+`-Wstrict-prototypes` added, none from these files or `rtg.h`, only one
+from the server's own `os.h`) against the server headers of the patched
+X11R6.3 tree, and a host test harness
 (`tests/va2000`) passes, running it against a software model of the card.
 The first results on the card will come from testers.
 
@@ -47,17 +49,23 @@ What the card driver does:
   is bounded (500000 status reads, about 100 ms). Overlapping copies use the
   R5 driver's two directions. A wait that reaches the bound means the
   blitter is lost for the rest of the server's life. The card then draws
-  what the blitter held with the CPU and sets `rtgBlitMin` to 0.
-- **Self-test:** at every screen start the blitter must be idle, and a 1x1
-  fill must finish within the bound and appear in the framebuffer. If not,
-  the server runs without the blitter and says so once.
+  what the blitter held with the CPU, clears `RTG_CAP_BLITTER` in its caps
+  and sets `rtgBlitMin` to 0, as `rtg.h` asks of a card that loses its
+  blitter while the server runs.
+- **Self-test:** at every screen start (initHW) the blitter must be idle,
+  and a 1x1 fill must finish within the bound and appear in the framebuffer.
+  If not, the card says so once and clears `RTG_CAP_BLITTER` in its caps;
+  it does not touch `rtgBlitMin`. The layer reads the caps again after
+  initHW, sets `rtgBlitMin` to 0 itself, and draws everything on the CPU.
 - **Monitor:** the switch sends `SVGAIOCSetMonitorSwitch` with an
   `unsigned short`, which is what the VA2000 kernel driver reads. Closing the
   screen writes no register. At a server reset the picture stays. When the
   server ends, the layer's monitor switch and the driver's last close bring
   the Amiga video back. The R5 driver wrote the pass-through sequence at
   every close, so the monitor flashed at each reset.
-- **move16:** forced off on this card.
+- **move16:** the caps carry `RTG_CAP_NOMOVE16` (move16 bursts are not
+  proven on the card's Zorro III bus), so the layer ignores `-move16`. The
+  card does not touch `rtgMove16`.
 - **Counters:** off by default. Building with `-DVA2000_STATS` adds the
   blitter counters and a log of slow waits. There are no timing calls.
 
@@ -103,7 +111,13 @@ coordinates, moves one pixel at a time, stays busy for a set number of
 status reads, and can be made to stick, to do nothing, or to read the
 firmware byte from every register. Results are compared with a plain CPU
 fill and copy. `RTG_H=<path>` runs the tests against another `rtg.h`, for
-example the patched tree's. `tests/va2000/rtg.h` is a copy of version 1.
+example the patched tree's. `tests/va2000/rtg.h` is a copy of the
+patched tree's `rtg.h` (version 1). The harness carries the layer's caps
+check (the one it runs when it takes the card and after initHW), checks
+that the card's initHW never writes `rtgBlitMin` and that the card never
+writes `rtgMove16`, and checks the caps flags after a passing self-test, a
+failing one and a blitter lost later. The card files are built with
+`-Wstrict-prototypes` there too.
 
 ## To measure on the card
 

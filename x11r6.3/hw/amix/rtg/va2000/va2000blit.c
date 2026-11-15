@@ -67,17 +67,13 @@ va2000BlitIdle(va2000ScreenPtr pVA)
 }
 
 /*
-** The blitter is gone: no more work for it, in this server's life.  What it
-** held is drawn on the CPU (exact for a fill and for a copy whose boxes do
-** not overlap; an overlapping copy the blitter half did can leave damage
-** that the next expose repairs), and the layer is told (rtgBlitMin = 0).
+** The blitter is given up for the rest of this server's life: no more work
+** for it, said once, and RTG_CAP_BLITTER cleared in the card's caps (the
+** layer reads them after initHW, rtg.h).
 */
 static void
-va2000BlitLost(rtgScreenPtr pRTG, char *why)
+va2000BlitGiveUp(va2000ScreenPtr pVA, char *why)
 {
-    va2000ScreenPtr pVA = GetVA2000Screen(pRTG);
-    int             held = pVA->held;
-
     pVA->blitOn = FALSE;
     pVA->held = VA2000_HELD_NONE;
     if (!va2000BlitDead)
@@ -85,6 +81,22 @@ va2000BlitLost(rtgScreenPtr pRTG, char *why)
     va2000BlitDead = 1;
     va2000CardOps.caps.flags &= ~RTG_CAP_BLITTER;
     va2000CardOps.caps.blitMin = 0;
+}
+
+/*
+** The blitter is lost while the server runs: given up, what it held is drawn
+** on the CPU (exact for a fill and for a copy whose boxes do not overlap; an
+** overlapping copy the blitter half did can leave damage that the next
+** expose repairs), and the layer is told (rtgBlitMin = 0, rtg.h's clause for
+** a card that loses its blitter).
+*/
+static void
+va2000BlitLost(rtgScreenPtr pRTG, char *why)
+{
+    va2000ScreenPtr pVA = GetVA2000Screen(pRTG);
+    int             held = pVA->held;
+
+    va2000BlitGiveUp(pVA, why);
     rtgBlitMin = 0;
     if (held == VA2000_HELD_FILL)
         rtgCpuFill(pRTG, pVA->hx, pVA->hy, pVA->hx + pVA->hw,
@@ -241,8 +253,10 @@ va2000Flush(rtgScreenPtr pRTG)
 ** The start-up self-test, at every initHW: the blitter must be idle, and a
 ** 1x1 fill at (0,0) must finish within the bound and reach the framebuffer
 ** (mapped noncacheable, so the read sees the card's memory).  Otherwise the
-** server runs without the blitter, and says so once.  The screen has just
-** been cleared, and the pixel is put back.
+** blitter is given up, said once, and RTG_CAP_BLITTER cleared: the layer
+** reads the caps after initHW and draws everything on the CPU.  The card
+** does not touch rtgBlitMin here.  The screen has just been cleared, and the
+** pixel is put back.
 */
 void
 va2000BlitStart(rtgScreenPtr pRTG)
@@ -253,10 +267,8 @@ va2000BlitStart(rtgScreenPtr pRTG)
 
     pVA->blitOn = FALSE;
     pVA->held = VA2000_HELD_NONE;
-    if (va2000BlitDead || !(va2000CardOps.caps.flags & RTG_CAP_BLITTER)) {
-        rtgBlitMin = 0;
+    if (va2000BlitDead || !(va2000CardOps.caps.flags & RTG_CAP_BLITTER))
         return;
-    }
     if (!va2000BlitIdle(pVA)) {
         why = "the blitter stays busy at start-up";
     } else {
@@ -269,7 +281,7 @@ va2000BlitStart(rtgScreenPtr pRTG)
         fb[0] = 0;
     }
     if (why) {
-        va2000BlitLost(pRTG, why);
+        va2000BlitGiveUp(pVA, why);
         return;
     }
     pVA->blitOn = TRUE;

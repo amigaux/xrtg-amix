@@ -263,12 +263,6 @@ va2000InitHW(rtgScreenPtr pRTG)
     pRTG->cardPrivate  = (unsigned char *) pVA;
     pRTG->devFd        = fd;
 
-    /* move16 bursts stay off on this card: not proven on its Zorro III bus */
-    if (rtgMove16) {
-        ErrorF("va2000: -move16 is not used on this card\n");
-        rtgMove16 = 0;
-    }
-
     va2000BlitStart(pRTG);
     return TRUE;
 }
@@ -326,7 +320,8 @@ rtgCardOps va2000CardOps = {
         0xf800, 0x07e0, 0x001f, /* RGB565 */
         6,                      /* bitsPerRGB */
         1024,                   /* -blitmin's default, pixels */
-        RTG_CAP_BLITTER | RTG_CAP_USERREGS,
+        /* no move16 bursts: not proven on the card's Zorro III bus */
+        RTG_CAP_BLITTER | RTG_CAP_USERREGS | RTG_CAP_NOMOVE16,
     },
     va2000Probe,
     va2000SetMode,
